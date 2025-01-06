@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from database import MyDB
 from model import RiwayatSensor
@@ -7,9 +7,6 @@ import pytz
 import string
 import random
 import mysql.connector
-
-connection = MyDB.get_database_connection()
-cursor = connection.cursor()
 
 app = FastAPI()
 
@@ -21,12 +18,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Dependency untuk mendapatkan koneksi database
+def get_db():
+    connection = MyDB.get_database_connection()
+    try:
+        yield connection
+    finally:
+        connection.close()
+
 @app.get("/data/daily", status_code=status.HTTP_200_OK)
-async def get_daily_data():
+async def get_daily_data(db=Depends(get_db)):
     """
     Mengembalikan rata-rata kelembapan, suhu, cahaya berdasarkan tanggal, dan seluruh data di hari tersebut
     """
     try:
+        cursor = db.cursor()
         # Query untuk menghitung rata-rata berdasarkan tanggal
         daily_query = """
         SELECT 
@@ -52,6 +58,7 @@ async def get_daily_data():
         """
         cursor.execute(all_data_query)
         all_data_results = cursor.fetchall()
+        cursor.close()
 
         # Mengelompokkan seluruh data berdasarkan tanggal
         data_by_date = {}
@@ -85,35 +92,43 @@ async def get_daily_data():
         raise HTTPException(status_code=400, detail=f"Error: {err}")
 
 @app.get("/data", status_code=status.HTTP_200_OK)
-async def get_data():
-    # Query untuk mengambil data dan mengurutkan berdasarkan waktu terbaru
-    select_query = "SELECT id, kelembapan, suhu, cahaya, apakah_disiram, waktu FROM riwayat_sensor ORDER BY waktu DESC"
-    cursor.execute(select_query)
-    results = cursor.fetchall()
+async def get_data(db=Depends(get_db)):
+    try:
+        cursor = db.cursor()
 
-    # Ubah format hasil menjadi dictionary
-    formatted_results = [
-        {
-            "kelembapan": row[1],
-            "suhu": row[2],
-            "cahaya": row[3],
-            "apakah_disiram": bool(row[4]),
-            "waktu": row[5].isoformat()
-        }
-        for row in results
-    ]
+        # Query untuk mengambil data dan mengurutkan berdasarkan waktu terbaru
+        select_query = "SELECT id, kelembapan, suhu, cahaya, apakah_disiram, waktu FROM riwayat_sensor ORDER BY waktu DESC"
+        cursor.execute(select_query)
+        results = cursor.fetchall()
+        cursor.close()
+        # Ubah format hasil menjadi dictionary
+        formatted_results = [
+            {
+                "kelembapan": row[1],
+                "suhu": row[2],
+                "cahaya": row[3],
+                "apakah_disiram": bool(row[4]),
+                "waktu": row[5].isoformat()
+            }
+            for row in results
+        ]
+        
+        return formatted_results
     
-    return formatted_results
+    except Exception as err:
+        raise HTTPException(status_code=400, detail=f"Error: {err}")
 
 @app.post("/data", status_code=status.HTTP_201_CREATED)
-async def post_data(riwayat_sensor: RiwayatSensor):
+async def post_data(riwayat_sensor: RiwayatSensor, db=Depends(get_db)):
     generated_id = ''.join(random.choices(string.ascii_letters, k=10))
     timestamp = datetime.now(pytz.timezone('Asia/Jakarta'))
     query = "INSERT INTO riwayat_sensor (id, kelembapan, suhu, cahaya, apakah_disiram, waktu) VALUES (%s, %s, %s, %s, %s, %s)"
     values = (generated_id, riwayat_sensor.kelembapan, riwayat_sensor.suhu, riwayat_sensor.cahaya, riwayat_sensor.apakah_disiram, timestamp)
     try:
+        cursor = db.cursor()
         cursor.execute(query, values)
-        connection.commit()
+        db.commit()
+        cursor.close()
     except mysql.connector.Error as err:
         raise HTTPException(status_code=400, detail=f"Error: {err}")
 
